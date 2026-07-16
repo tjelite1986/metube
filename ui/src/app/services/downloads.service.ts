@@ -3,7 +3,7 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { of, Subject } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { MeTubeSocket } from './metube-socket.service';
-import { Download, Status, State } from '../interfaces';
+import { Download, Status, State, PlaylistProbe } from '../interfaces';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 
 export interface AddDownloadPayload {
@@ -159,6 +159,25 @@ export class DownloadsService {
     if (cs) body['clip_start'] = cs;
     if (ce) body['clip_end'] = ce;
     return this.http.post<Status>('add', body).pipe(
+      catchError(this.handleHTTPError)
+    );
+  }
+
+  public playlistItems(url: string) {
+    return this.http.get<PlaylistProbe>('playlist-items', { params: { url } }).pipe(
+      catchError((err: HttpErrorResponse) =>
+        of({ status: 'error', msg: err.error?.msg || err.message } as PlaylistProbe))
+    );
+  }
+
+  public markDownloaded(url: string) {
+    return this.http.post<Status>('downloaded/mark', { url }).pipe(
+      catchError(this.handleHTTPError)
+    );
+  }
+
+  public unmarkDownloaded(url: string) {
+    return this.http.post<Status>('downloaded/unmark', { url }).pipe(
       catchError(this.handleHTTPError)
     );
   }

@@ -23,6 +23,7 @@ from yt_dlp.postprocessor.common import PostProcessor
 from yt_dlp.utils import STR_FORMAT_RE_TMPL, STR_FORMAT_TYPES
 import bg_tasks
 from dl_formats import get_format, get_opts, AUDIO_FORMATS, merge_ytdl_option_layers
+from downloaded_registry import DownloadedRegistry
 from datetime import datetime
 from state_store import AtomicJsonStore, from_json_compatible, read_legacy_shelf, to_json_compatible
 from subscriptions import _entry_id
@@ -967,6 +968,11 @@ class DownloadQueue:
             thread_name_prefix="dl",
         )
         self.done.load()
+        self.downloaded = DownloadedRegistry(self.config.STATE_DIR + '/downloaded_registry')
+        # Finished downloads that predate the registry still count as done.
+        self.downloaded.seed(
+            key for key, v in self.done.items() if getattr(v.info, 'status', None) == 'finished'
+        )
         self._add_generation = 0
         self._canceled_urls = set()  # URLs canceled during current playlist add
         self._scheduled_probe_at: dict[str, float] = {}
@@ -1189,6 +1195,8 @@ class DownloadQueue:
                 bg_tasks.create_task(self.notifier.canceled(download.info.url), name="notify_canceled")
             else:
                 self.done.put(download)
+                if download.info.status == 'finished':
+                    self.downloaded.mark(download.info.url)
                 bg_tasks.create_task(self.notifier.completed(download.info), name="notify_completed")
                 try:
                     clear_after = int(self.config.CLEAR_COMPLETED_AFTER)
@@ -1233,6 +1241,72 @@ class DownloadQueue:
         if imp is not None:
             params['impersonate'] = yt_dlp.networking.impersonate.ImpersonateTarget.from_str(imp)
         return yt_dlp.YoutubeDL(params=params).extract_info(url, download=False)
+
+    async def playlist_items(self, url, limit=500):
+        """Flat-extract a playlist/channel for the playlist browser: every
+        entry plus whether it is already in the downloaded registry.
+        """
+        url_error = await asyncio.get_running_loop().run_in_executor(None, validate_url, url)
+        if url_error is not None:
+            log.warning('Rejected URL "%s": %s', url, url_error)
+            return {'status': 'error', 'msg': url_error}
+
+        def probe():
+            debug_logging = logging.getLogger().isEnabledFor(logging.DEBUG)
+            user_opts = self._build_ytdl_options(None, None)
+            params = {
+                **user_opts,
+                'quiet': not debug_logging,
+                'verbose': debug_logging,
+                'no_color': True,
+                'extract_flat': 'in_playlist',
+                'ignore_no_formats_error': True,
+                'playlist_items': f'1:{limit}',
+            }
+            imp = user_opts.get('impersonate')
+            if imp is not None:
+                params['impersonate'] = yt_dlp.networking.impersonate.ImpersonateTarget.from_str(imp)
+            return yt_dlp.YoutubeDL(params=params).extract_info(url, download=False)
+
+        try:
+            entry = await asyncio.get_running_loop().run_in_executor(None, probe)
+        except yt_dlp.utils.YoutubeDLError as exc:
+            return {'status': 'error', 'msg': str(exc)}
+        if not entry:
+            return {'status': 'error', 'msg': 'Nothing found at this URL.'}
+        etype = entry.get('_type') or 'video'
+        if etype not in ('playlist', 'channel') or 'entries' not in entry:
+            return {'status': 'ok', 'is_playlist': False, 'items': []}
+        entries = entry['entries']
+        if isinstance(entries, types.GeneratorType):
+            entries = list(entries)
+        items = []
+        for etr in entries:
+            if not isinstance(etr, dict):
+                continue
+            item_url = etr.get('webpage_url') or etr.get('url')
+            if not item_url:
+                continue
+            thumbnails = etr.get('thumbnails') or []
+            last_thumbnail = thumbnails[-1] if thumbnails else None
+            items.append({
+                'id': etr.get('id'),
+                'title': etr.get('title') or etr.get('id') or item_url,
+                'url': item_url,
+                'duration': etr.get('duration'),
+                'thumbnail': last_thumbnail.get('url') if isinstance(last_thumbnail, dict) else None,
+                'channel': etr.get('channel') or etr.get('uploader'),
+                'downloaded': self.downloaded.is_downloaded(item_url),
+            })
+        return {
+            'status': 'ok',
+            'is_playlist': True,
+            'title': entry.get('title'),
+            'count': len(items),
+            # A full page means there may be more beyond the probe limit.
+            'truncated': len(items) >= limit,
+            'items': items,
+        }
 
     def __calc_download_path(self, download_type, folder):
         base_directory = self.config.AUDIO_DOWNLOAD_DIR if download_type == 'audio' else self.config.DOWNLOAD_DIR

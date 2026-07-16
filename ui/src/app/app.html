@@ -126,6 +126,13 @@
                 [disabled]="downloads.loading">
                 Subscribe
               </button>
+              <button class="btn btn-outline-secondary btn-lg px-3" type="button"
+                (click)="openBrowseModal()"
+                [disabled]="downloads.loading"
+                ngbPopover="Browse a playlist or channel and pick which items to download."
+                triggers="hover" container="body">
+                <fa-icon [icon]="faListUl" /><span class="d-none d-lg-inline ms-2">Browse</span>
+              </button>
             }
           </ng-template>
 
@@ -624,6 +631,95 @@
       </div>
     </div>
   </form>
+
+  <!-- Playlist Browser Modal -->
+  <div class="modal fade" tabindex="-1" role="dialog"
+  aria-modal="true"
+  aria-labelledby="playlist-browser-modal-title"
+  [class.show]="browseModalOpen"
+  [style.display]="browseModalOpen ? 'block' : 'none'">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable" role="document">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 id="playlist-browser-modal-title" class="modal-title">
+            {{ browseTitle || 'Browse playlist' }}
+            @if (browseItems.length) {
+              <small class="text-muted">— {{ browseItems.length }} items{{ browseTruncated ? ' (first page)' : '' }}</small>
+            }
+          </h5>
+          <button type="button" class="btn-close" aria-label="Close" (click)="closeBrowseModal()"></button>
+        </div>
+        <div class="modal-body">
+          @if (browseLoading) {
+            <div class="text-center py-4">
+              <span class="spinner-border" role="status"></span>
+              <div class="mt-2"><small class="text-muted">Fetching playlist entries…</small></div>
+            </div>
+          } @else if (browseError) {
+            <div class="alert alert-warning mb-0" role="alert">{{ browseError }}</div>
+          } @else {
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+              <button type="button" class="btn btn-sm btn-outline-secondary" (click)="toggleBrowseSelectAll()">
+                {{ browseAllVisibleSelected() ? 'Deselect all' : 'Select all' }}
+              </button>
+              @if (browseDownloadedCount() > 0) {
+                <button type="button" class="btn btn-sm btn-outline-secondary" (click)="toggleBrowseHideDownloaded()">
+                  {{ browseHideDownloaded ? 'Show all (' + browseItems.length + ')' : 'Hide downloaded (' + browseDownloadedCount() + ')' }}
+                </button>
+              }
+              <input type="text" class="form-control form-control-sm w-auto flex-grow-1" placeholder="Filter by title"
+                [(ngModel)]="browseFilter" [ngModelOptions]="{standalone: true}">
+            </div>
+            <div class="list-group">
+              @for (item of browseVisibleItems(); track item.url) {
+                <label class="list-group-item d-flex align-items-center gap-2">
+                  <input class="form-check-input flex-shrink-0 m-0" type="checkbox"
+                    [(ngModel)]="item.selected" [ngModelOptions]="{standalone: true}">
+                  @if (item.thumbnail) {
+                    <img [src]="item.thumbnail" alt="" width="64" height="36" class="rounded flex-shrink-0" style="object-fit: cover;">
+                  }
+                  <span class="flex-grow-1 text-truncate" title="{{ item.title }}">{{ item.title }}</span>
+                  @if (item.duration !== null) {
+                    <small class="text-muted flex-shrink-0">{{ formatDuration(item.duration) }}</small>
+                  }
+                  @if (item.downloaded) {
+                    <span class="badge text-bg-success flex-shrink-0">downloaded</span>
+                  }
+                  <button type="button" class="btn btn-sm btn-link p-0 flex-shrink-0"
+                    [attr.aria-label]="(item.downloaded ? 'Remove downloaded mark for ' : 'Mark as downloaded: ') + item.title"
+                    (click)="$event.preventDefault(); toggleBrowseItemMark(item)">
+                    <fa-icon [icon]="item.downloaded ? faTimesCircle : faCheckCircle" />
+                  </button>
+                </label>
+              } @empty {
+                <div class="list-group-item text-muted">Nothing matches the current filter.</div>
+              }
+            </div>
+          }
+          @if (browseAddTotal > 0) {
+            <div class="progress mt-3" style="height: 20px;">
+              <div class="progress-bar"
+                [class.bg-danger]="browseAddFailures > 0"
+                role="progressbar"
+                [style.width.%]="(browseAddCount / browseAddTotal) * 100"
+                [attr.aria-valuenow]="browseAddCount"
+                [attr.aria-valuemin]="0"
+                [attr.aria-valuemax]="browseAddTotal">
+                {{ browseAddCount }} / {{ browseAddTotal }}
+              </div>
+            </div>
+          }
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" (click)="closeBrowseModal()">Close</button>
+          <button type="button" class="btn btn-primary" (click)="addSelectedBrowseItems()"
+            [disabled]="browseAddInProgress || browseSelectedCount() === 0">
+            {{ browseAddInProgress ? 'Queuing…' : 'Add selected (' + browseSelectedCount() + ')' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Batch Import Modal -->
   <div class="modal fade" tabindex="-1" role="dialog"

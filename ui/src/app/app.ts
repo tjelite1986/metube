@@ -7,7 +7,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FontAwesomeModule } from '@fortawesome/angular-fontawesome';
 import { NgbModule, NgbTypeahead } from '@ng-bootstrap/ng-bootstrap';
 import { NgSelectModule } from '@ng-select/ng-select';
-import { faTrashAlt, faCheckCircle, faTimesCircle, faRedoAlt, faSun, faMoon, faCheck, faCircleHalfStroke, faDownload, faExternalLinkAlt, faFileImport, faFileExport, faCopy, faClock, faTachometerAlt, faSortAmountDown, faSortAmountUp, faChevronRight, faChevronDown, faUpload, faPause, faPlay, faShareNodes } from '@fortawesome/free-solid-svg-icons';
+import { faTrashAlt, faCheckCircle, faTimesCircle, faRedoAlt, faSun, faMoon, faCheck, faCircleHalfStroke, faDownload, faExternalLinkAlt, faFileImport, faFileExport, faCopy, faClock, faTachometerAlt, faSortAmountDown, faSortAmountUp, faChevronRight, faChevronDown, faUpload, faPause, faPlay, faShareNodes, faListUl } from '@fortawesome/free-solid-svg-icons';
 import { faGithub } from '@fortawesome/free-brands-svg-icons';
 import { CookieService } from 'ngx-cookie-service';
 import { AddDownloadPayload, DownloadsService } from './services/downloads.service';
@@ -32,6 +32,7 @@ import {
   CAPTION_FORMATS,
   THUMBNAIL_FORMATS,
   State,
+  PlaylistItem,
 } from './interfaces';
 import { EtaPipe, SpeedPipe, FileSizePipe } from './pipes';
 import { SelectAllCheckboxComponent, ItemCheckboxComponent, ToastContainerComponent } from './components/';
@@ -195,6 +196,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
   faPause = faPause;
   faPlay = faPlay;
   faShareNodes = faShareNodes;
+  faListUl = faListUl;
   subtitleLanguages = [
     { id: 'en', text: 'English' },
     { id: 'ar', text: 'Arabic' },
@@ -1407,6 +1409,163 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
   closeBatchImportModal(): void {
     this.batchImportModalOpen = false;
     this.lastFocusedElement?.focus();
+  }
+
+  // ---- Playlist browser: pick individual items before queuing ----
+  browseModalOpen = false;
+  browseLoading = false;
+  browseError = '';
+  browseTitle: string | null = null;
+  browseTruncated = false;
+  browseItems: PlaylistItem[] = [];
+  browseHideDownloaded = false;
+  browseFilter = '';
+  browseAddInProgress = false;
+  browseAddCount = 0;
+  browseAddTotal = 0;
+  browseAddFailures = 0;
+  private browseToken = 0;
+  private browseAddCancel$ = new Subject<void>();
+
+  openBrowseModal(): void {
+    const url = (this.addUrl || '').trim();
+    if (!url) {
+      this.toasts.error('Enter a playlist or channel URL first.');
+      return;
+    }
+    this.lastFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    this.browseModalOpen = true;
+    this.browseLoading = true;
+    this.browseError = '';
+    this.browseTitle = null;
+    this.browseTruncated = false;
+    this.browseItems = [];
+    this.browseFilter = '';
+    this.browseAddCount = 0;
+    this.browseAddTotal = 0;
+    this.browseAddFailures = 0;
+    this.browseHideDownloaded = this.cookieService.get('metube_browse_hide_downloaded') === 'true';
+    const token = ++this.browseToken;
+    this.downloads.playlistItems(url).subscribe(probe => {
+      if (token !== this.browseToken) {
+        return; // the modal was closed or reopened for another URL
+      }
+      this.browseLoading = false;
+      if (probe.status !== 'ok') {
+        this.browseError = probe.msg || 'Probing the URL failed.';
+      } else if (!probe.is_playlist) {
+        this.browseError = 'Not a playlist or channel — use the Download button for single videos.';
+      } else {
+        this.browseTitle = probe.title || null;
+        this.browseTruncated = !!probe.truncated;
+        this.browseItems = probe.items || [];
+      }
+      this.cdr.markForCheck();
+    });
+  }
+
+  closeBrowseModal(): void {
+    this.browseModalOpen = false;
+    this.browseToken++;
+    this.browseAddCancel$.next();
+    this.lastFocusedElement?.focus();
+  }
+
+  browseVisibleItems(): PlaylistItem[] {
+    const filter = this.browseFilter.trim().toLowerCase();
+    return this.browseItems.filter(item =>
+      (!this.browseHideDownloaded || !item.downloaded) &&
+      (!filter || item.title.toLowerCase().includes(filter)));
+  }
+
+  browseSelectedCount(): number {
+    return this.browseItems.filter(item => item.selected).length;
+  }
+
+  browseDownloadedCount(): number {
+    return this.browseItems.filter(item => item.downloaded).length;
+  }
+
+  browseAllVisibleSelected(): boolean {
+    const visible = this.browseVisibleItems();
+    return visible.length > 0 && visible.every(item => item.selected);
+  }
+
+  toggleBrowseSelectAll(): void {
+    const target = !this.browseAllVisibleSelected();
+    for (const item of this.browseVisibleItems()) {
+      item.selected = target;
+    }
+  }
+
+  toggleBrowseHideDownloaded(): void {
+    this.browseHideDownloaded = !this.browseHideDownloaded;
+    this.cookieService.set('metube_browse_hide_downloaded', this.browseHideDownloaded ? 'true' : 'false', { expires: this.settingsCookieExpiryDays });
+  }
+
+  toggleBrowseItemMark(item: PlaylistItem): void {
+    const request = item.downloaded
+      ? this.downloads.unmarkDownloaded(item.url)
+      : this.downloads.markDownloaded(item.url);
+    request.subscribe(status => {
+      if (status.status === 'ok') {
+        item.downloaded = !item.downloaded;
+      } else {
+        this.toasts.error(status.msg || 'Could not update the downloaded mark.');
+      }
+      this.cdr.markForCheck();
+    });
+  }
+
+  formatDuration(seconds: number | null): string {
+    if (seconds == null || !isFinite(seconds)) {
+      return '';
+    }
+    const total = Math.round(seconds);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+    return (h > 0 ? h + ':' : '') + mm + ':' + String(s).padStart(2, '0');
+  }
+
+  addSelectedBrowseItems(): void {
+    const selected = this.browseItems.filter(item => item.selected);
+    if (selected.length === 0) {
+      return;
+    }
+    this.browseAddInProgress = true;
+    this.browseAddCount = 0;
+    this.browseAddFailures = 0;
+    this.browseAddTotal = selected.length;
+    from(selected).pipe(
+      mergeMap(
+        item => this.downloads.add(this.buildAddPayload({ url: item.url })).pipe(
+          tap((status: Status) => {
+            if (status.status === 'error') {
+              this.browseAddFailures++;
+              console.error(`Error adding ${item.url}: ${status.msg}`);
+            } else {
+              item.selected = false;
+            }
+            this.browseAddCount++;
+            this.cdr.markForCheck();
+          }),
+        ),
+        App.BATCH_IMPORT_CONCURRENCY,
+      ),
+      takeUntil(this.browseAddCancel$),
+      takeUntilDestroyed(this.destroyRef),
+      finalize(() => {
+        this.browseAddInProgress = false;
+        if (this.browseAddFailures > 0) {
+          this.toasts.error(`Queued ${this.browseAddCount - this.browseAddFailures} items, ${this.browseAddFailures} failed.`);
+        } else if (this.browseAddCount > 0) {
+          this.toasts.success(`Queued ${this.browseAddCount} items.`);
+        }
+        this.cdr.markForCheck();
+      }),
+    ).subscribe();
   }
 
   // Start importing URLs from the batch modal textarea

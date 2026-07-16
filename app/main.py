@@ -1086,6 +1086,33 @@ async def cookie_status(request):
     exists = has_uploaded_cookies or has_configured_cookies
     return web.Response(text=serializer.encode({'status': 'ok', 'has_cookies': exists}))
 
+@routes.get(config.URL_PREFIX + 'playlist-items')
+async def playlist_items(request):
+    url = request.query.get('url', '').strip()
+    if not url:
+        raise web.HTTPBadRequest(reason="missing 'url'")
+    log.info(f"Playlist browse request: {url}")
+    result = await dqueue.playlist_items(url)
+    return web.Response(text=serializer.encode(result))
+
+@routes.post(config.URL_PREFIX + 'downloaded/mark')
+async def downloaded_mark(request):
+    post = await _read_json_request(request)
+    url = str(post.get('url') or '').strip()
+    if not url:
+        raise web.HTTPBadRequest(reason="missing 'url'")
+    dqueue.downloaded.mark(url)
+    return web.Response(text=serializer.encode({'status': 'ok'}))
+
+@routes.post(config.URL_PREFIX + 'downloaded/unmark')
+async def downloaded_unmark(request):
+    post = await _read_json_request(request)
+    url = str(post.get('url') or '').strip()
+    if not url:
+        raise web.HTTPBadRequest(reason="missing 'url'")
+    dqueue.downloaded.unmark(url)
+    return web.Response(text=serializer.encode({'status': 'ok'}))
+
 @routes.get(config.URL_PREFIX + 'history')
 async def history(request):
     history = { 'done': [], 'queue': [], 'pending': []}
