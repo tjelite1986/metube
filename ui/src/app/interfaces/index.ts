@@ -8,3 +8,4 @@ export * from './format';
 export * from './formats';
 export * from './subscription';
 export * from './playlist';
+export * from './music';
